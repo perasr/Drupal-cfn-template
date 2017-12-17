@@ -1,0 +1,338 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Using Amazon RDS for Applications.  Sign-in with the default account 'admin' and the password 'admin'.",
+  "Parameters": {
+    "KeyName": {
+      "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+      "Type": "String"
+    },
+    "InstanceType": {
+      "Description": "WebServer EC2 instance type",
+      "Type": "String",
+      "Default": "t2.micro"
+    },
+    "DBRootPassword": {
+      "NoEcho": "true",
+      "Description": "Root password for MySQL",
+      "Default": "admin123",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "41",
+      "AllowedPattern": "[a-zA-Z0-9]*",
+      "ConstraintDescription": "must contain only alphanumeric characters."
+    }
+  },
+  "Mappings": {
+    "AWSRegionToAMI": {
+      "us-east-1": {
+        "AMI": "ami-a4c7edb2"
+      },
+      "us-east-2": {
+        "AMI": "ami-8a7859ef"
+      },
+      "us-west-1": {
+        "AMI": "ami-327f5352"
+      },
+      "us-west-2": {
+        "AMI": "ami-6df1e514"
+      },
+      "ca-central-1": {
+        "AMI": "ami-a7aa15c3"
+      },
+      "eu-west-1": {
+        "AMI": "ami-d7b9a2b1"
+      },
+      "eu-west-2": {
+        "AMI": "ami-ed100689"
+      },
+      "eu-central-1": {
+        "AMI": "ami-82be18ed"
+      },
+      "sa-east-1": {
+        "AMI": "ami-87dab1eb"
+      },
+      "ap-southeast-1": {
+        "AMI": "ami-77af2014"
+      },
+      "ap-southeast-2": {
+        "AMI": "ami-10918173"
+      },
+      "ap-south-1": {
+        "AMI": "ami-47205e28"
+      },
+      "ap-northeast-1": {
+        "AMI": "ami-3bd3c45c"
+      },
+      "ap-northeast-2": {
+        "AMI": "ami-e21cc38c"
+      }
+    }
+  },
+  "Resources": {
+    "CfnUser": {
+      "Type": "AWS::IAM::User",
+      "Properties": {
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "root",
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "cloudformation:DescribeStackResource",
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "HostKeys": {
+      "Type": "AWS::IAM::AccessKey",
+      "Properties": {
+        "UserName": {
+          "Ref": "CfnUser"
+        }
+      }
+    },
+    "WebServer": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": [
+        "WebServerSecurityGroup"
+      ],
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "packages": {
+              "yum": {
+                "httpd": [],
+                "php": [],
+                "php-mysql": [],
+                "php-gd": [],
+                "php-xml": [],
+                "php-mbstring": [],
+                "mysql": [],
+                "mysql-server": [],
+                "mysql-devel": [],
+                "mysql-libs": []
+              }
+            },
+            "sources": {
+              "/var/www/html": "http://ftp.drupal.org/files/projects/drupal-7.8.tar.gz",
+              "/home/ec2-user": "http://ftp.drupal.org/files/projects/drush-7.x-4.5.tar.gz"
+            },
+            "files": {
+              "/tmp/setup.mysql": {
+                "content": "CREATE DATABASE drupaldb;\n",
+                "mode": "000644",
+                "owner": "root",
+                "group": "root"
+              }
+            },
+            "services": {
+              "sysvinit": {
+                "httpd": {
+                  "enabled": "true",
+                  "ensureRunning": "true"
+                },
+                "mysqld": {
+                  "enabled": "true",
+                  "ensureRunning": "true"
+                },
+                "sendmail": {
+                  "enabled": "false",
+                  "ensureRunning": "false"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Properties": {
+        "ImageId": {
+          "Fn::FindInMap": [
+            "AWSRegionToAMI",
+            {
+              "Ref": "AWS::Region"
+            },
+            "AMI"
+          ]
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "SecurityGroups": [
+          {
+            "Ref": "WebServerSecurityGroup"
+          }
+        ],
+        "KeyName": {
+          "Ref": "KeyName"
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash -v\n",
+                "yum update -y aws-cfn-bootstrap\n",
+                "# Helper function\n",
+                "function error_exit\n",
+                "{\n",
+                "  /opt/aws/bin/cfn-signal -e 1 -r \"$1\" '",
+                {
+                  "Ref": "WaitHandle"
+                },
+                "'\n",
+                "  exit 1\n",
+                "}\n",
+                "# Install Apache Web Server, MySQL, PHP and Drupal\n",
+                "/opt/aws/bin/cfn-init -s ",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                " -r WebServer ",
+                "    --access-key ",
+                {
+                  "Ref": "HostKeys"
+                },
+                "    --secret-key ",
+                {
+                  "Fn::GetAtt": [
+                    "HostKeys",
+                    "SecretAccessKey"
+                  ]
+                },
+                "    --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                " || error_exit 'Failed to run cfn-init'\n",
+                "# Setup MySQL root password and create a user\n",
+                "mysqladmin -u root password '",
+                {
+                  "Ref": "DBRootPassword"
+                },
+                "' || error_exit 'Failed to initialize root password'\n",
+                "mysql -u root --password='",
+                {
+                  "Ref": "DBRootPassword"
+                },
+                "' < /tmp/setup.mysql || error_exit 'Failed to create database user'\n",
+                "# Make changes to Apache Web Server configuration\n",
+                "mv /var/www/html/drupal-7.8/* /var/www/html\n",
+                "mv /var/www/html/drupal-7.8/.* /var/www/html\n",
+                "rmdir /var/www/html/drupal-7.8\n",
+                "sed -i 's/AllowOverride None/AllowOverride All/g'  /etc/httpd/conf/httpd.conf\n",
+                "service httpd restart\n",
+                "# Create the site in Drupal\n",
+                "cd /var/www/html\n",
+                "~ec2-user/drush/drush site-install standard --yes",
+                "     --site-name='Example Site'",
+                "     --account-name=admin --account-pass=admin",
+                "     --db-url=mysql://root:",
+                {
+                  "Ref": "DBRootPassword"
+                },
+                "@localhost/drupaldb",
+                "     --db-prefix=drupal_\n",
+                "chown apache:apache sites/default/files\n",
+                "# All is well so signal success\n",
+                "/opt/aws/bin/cfn-signal -e 0 -r \"Drupal setup complete\" '",
+                {
+                  "Ref": "WaitHandle"
+                },
+                "'\n"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "WaitHandle": {
+      "Type": "AWS::CloudFormation::WaitConditionHandle"
+    },
+    "WaitCondition": {
+      "Type": "AWS::CloudFormation::WaitCondition",
+      "DependsOn": "WebServer",
+      "Properties": {
+        "Handle": {
+          "Ref": "WaitHandle"
+        },
+        "Timeout": "1300"
+      }
+    },
+    "WebServerSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": "WebServerSecurityGroup",
+        "GroupDescription": "Enable HTTP access via port 80",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "80",
+            "ToPort": "80",
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "22",
+            "ToPort": "22",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    "DBSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "DependsOn": "WebServerSecurityGroup",
+      "Properties": {
+        "GroupName": "DBSecurityGroup",
+        "GroupDescription": "Enable MySQL access via port 3306",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "3306",
+            "ToPort": "3306",
+            "SourceSecurityGroupId": {
+              "Fn::GetAtt": [
+                "WebServerSecurityGroup",
+                "GroupId"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "WebsiteURL": {
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "http://",
+            {
+              "Fn::GetAtt": [
+                "WebServer",
+                "PublicDnsName"
+              ]
+            }
+          ]
+        ]
+      },
+      "Description": "Drupal Website"
+    },
+    "PublicIP": {
+      "Value": {
+        "Fn::GetAtt": [
+          "WebServer",
+          "PublicIp"
+        ]
+      },
+      "Description": "EC2 Instance IP Address"
+    }
+  }
+}
